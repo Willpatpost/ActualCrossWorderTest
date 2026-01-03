@@ -2,6 +2,7 @@
 
 import { predefinedPuzzles } from './puzzles.js';
 import { WordListProvider } from './WordListProvider.js';
+import { WiktionaryDefinitionsProvider } from './WiktionaryDefinitionsProvider.js';
 
 export class CrosswordSolver {
   constructor() {
@@ -47,9 +48,10 @@ export class CrosswordSolver {
       uppercase: true,
     });
 
-    // --------------------- WordNet Dictionary (Lazy-loaded) ---------------------
-    this.dictionary = null;
-    this._wordNetLoadPromise = null;
+    // --------------------- Wiktionary Definitions (Lazy by length) ---------------------
+    this.definitionsProvider = new WiktionaryDefinitionsProvider({
+    basePath: "Data/defs_by_length",
+    });
 
     // --------------------- Method Binding ---------------------
     this.loadWords = this.loadWords.bind(this);
@@ -78,75 +80,47 @@ export class CrosswordSolver {
         this.dictionary = dictionaryObj;
         this.debugLog("Dictionary set. Example 'run':", this.dictionary['run']);
     }
-    
-    /**
-     * showDefinitionPopup(rawWord):
-     * 1) If WordNet is not loaded yet, lazy-load it (once) on demand.
-     * 2) Look up rawWord in the local WordNet dictionary.
-     *    - If found, display definitions from "WordNet".
-     * 3) If not found/empty OR WordNet load fails, fetch from fallback dictionary API.
-     *    - If successful, display from "DictionaryAPI".
-     *    - Otherwise, show "No definition found."
-     *
-     * NOTE: Requires:
-     *   - this.dictionary (null until loaded)
-     *   - this._wordNetLoadPromise (null until first load attempt)
-     *   - WordNetLoader.js exports loadWordNetDictionary()
-     */
+
     async showDefinitionPopup(rawWord) {
-      if (!rawWord) return;
-      const word = rawWord.toLowerCase();
-    
-      // 1) Lazy-load WordNet if needed (only once)
-      if (!this.dictionary) {
-        try {
-          if (!this._wordNetLoadPromise) {
-            this._wordNetLoadPromise = (async () => {
-              const mod = await import("./WordNetLoader.js");
-              return await mod.loadWordNetDictionary();
-            })();
-          }
-          this.dictionary = await this._wordNetLoadPromise;
-        } catch (e) {
-          console.warn("WordNet lazy-load failed; will use fallback API.", e);
-          // Don't keep a rejected promise around forever
-          this._wordNetLoadPromise = null;
-          this.dictionary = null;
-        }
-      }
-    
-      // 2) Attempt local WordNet dictionary
-      const wordNetSenses = this.dictionary ? this.dictionary[word] : null;
-      if (wordNetSenses && wordNetSenses.length > 0) {
-        this.displayDefinitionsPopup(rawWord, wordNetSenses, "WordNet");
+    if (!rawWord) return;
+
+    // 1) Try Wiktionary definitions first (lazy-loaded by word length)
+    try {
+        const senses = await this.definitionsProvider.lookup(rawWord);
+        if (senses && senses.length > 0) {
+        this.displayDefinitionsPopup(rawWord, senses, "Wiktionary");
         return;
-      }
-    
-      // 3) Fallback: fetch from a dictionary API
-      try {
-        const fallbackData = await this.fetchFallbackDefinition(word);
+        }
+    } catch (e) {
+        console.warn("Wiktionary definition lookup failed; using fallback API.", e);
+    }
+
+    // 2) Fallback: fetch from a dictionary API
+    try {
+        const wordLower = rawWord.toLowerCase();
+        const fallbackData = await this.fetchFallbackDefinition(wordLower);
         if (fallbackData && fallbackData.length > 0) {
-          const fallbackSenses = this.transformFallbackData(fallbackData);
-          if (fallbackSenses && fallbackSenses.length > 0) {
+        const fallbackSenses = this.transformFallbackData(fallbackData);
+        if (fallbackSenses && fallbackSenses.length > 0) {
             this.displayDefinitionsPopup(rawWord, fallbackSenses, "DictionaryAPI");
             return;
-          }
         }
-    
-        // 4) If still no definition, display "No definition found."
+        }
+
+        // 3) If still no definition, display "No definition found."
         this.createPopup(`
-          <h2>${rawWord}</h2>
-          <p><em>No definition found.</em></p>
-          <small>Source: DictionaryAPI</small>
+        <h2>${rawWord}</h2>
+        <p><em>No definition found.</em></p>
+        <small>Source: DictionaryAPI</small>
         `);
-      } catch (err) {
+    } catch (err) {
         console.warn("Fallback definition fetch failed:", err);
         this.createPopup(`
-          <h2>${rawWord}</h2>
-          <p><em>No definition found (API error).</em></p>
-          <small>Source: DictionaryAPI</small>
+        <h2>${rawWord}</h2>
+        <p><em>No definition found (API error).</em></p>
+        <small>Source: DictionaryAPI</small>
         `);
-      }
+    }
     }
 
     /**
