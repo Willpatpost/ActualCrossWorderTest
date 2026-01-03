@@ -37,7 +37,8 @@ export class CrosswordSolver {
 
         // --------------------- WordNet Dictionary ---------------------
         this.dictionary = null; // set via setDictionary(dictionaryObj) after loading
-
+        this._wordNetLoadPromise = null;
+        
         // --------------------- Method Binding ---------------------
         this.loadWords = this.loadWords.bind(this);
         this.generateGrid = this.generateGrid.bind(this);
@@ -65,55 +66,75 @@ export class CrosswordSolver {
         this.dictionary = dictionaryObj;
         this.debugLog("Dictionary set. Example 'run':", this.dictionary['run']);
     }
-
+    
     /**
      * showDefinitionPopup(rawWord):
-     * 1) Look up rawWord in our local WordNet dictionary.
-     * 2) If found, display the definitions from "WordNet".
-     * 3) If not found or empty, fetch from a fallback dictionary API.
-     *    - If successful, show from "DictionaryAPI" or whichever source.
-     *    - If still not found, show "No definition found."
+     * 1) If WordNet is not loaded yet, lazy-load it (once) on demand.
+     * 2) Look up rawWord in the local WordNet dictionary.
+     *    - If found, display definitions from "WordNet".
+     * 3) If not found/empty OR WordNet load fails, fetch from fallback dictionary API.
+     *    - If successful, display from "DictionaryAPI".
+     *    - Otherwise, show "No definition found."
+     *
+     * NOTE: Requires:
+     *   - this.dictionary (null until loaded)
+     *   - this._wordNetLoadPromise (null until first load attempt)
+     *   - WordNetLoader.js exports loadWordNetDictionary()
      */
     async showDefinitionPopup(rawWord) {
-        if (!rawWord) return;
-        const word = rawWord.toLowerCase();
-
-        // 1) Attempt local dictionary first
-        const senses = this.dictionary ? this.dictionary[word] : null;
-        if (senses && senses.length > 0) {
-            // We have at least one sense from WordNet
-            this.displayDefinitionsPopup(rawWord, senses, "WordNet");
-            return;
-        }
-
-        // 2) Fallback: fetch from a dictionary API
+      if (!rawWord) return;
+      const word = rawWord.toLowerCase();
+    
+      // 1) Lazy-load WordNet if needed (only once)
+      if (!this.dictionary) {
         try {
-            const fallbackData = await this.fetchFallbackDefinition(word);
-            if (fallbackData && fallbackData.length > 0) {
-                // Convert fallbackData to the same shape we use for display
-                // e.g. an array of { pos, definitions: [...] }
-                const senses = this.transformFallbackData(fallbackData);
-                if (senses.length > 0) {
-                    this.displayDefinitionsPopup(rawWord, senses, "DictionaryAPI");
-                    return;
-                }
-            }
-
-            // 3) If still no definition, display "No definition found."
-            this.createPopup(`
-              <h2>${rawWord}</h2>
-              <p><em>No definition found.</em></p>
-              <small>Source: DictionaryAPI</small>
-            `);
-        } catch (err) {
-            console.warn("Fallback definition fetch failed:", err);
-            // Show a basic "no definition" message
-            this.createPopup(`
-              <h2>${rawWord}</h2>
-              <p><em>No definition found (API error).</em></p>
-              <small>Source: DictionaryAPI</small>
-            `);
+          if (!this._wordNetLoadPromise) {
+            this._wordNetLoadPromise = (async () => {
+              const mod = await import("./WordNetLoader.js");
+              return await mod.loadWordNetDictionary();
+            })();
+          }
+          this.dictionary = await this._wordNetLoadPromise;
+        } catch (e) {
+          console.warn("WordNet lazy-load failed; will use fallback API.", e);
+          // Don't keep a rejected promise around forever
+          this._wordNetLoadPromise = null;
+          this.dictionary = null;
         }
+      }
+    
+      // 2) Attempt local WordNet dictionary
+      const wordNetSenses = this.dictionary ? this.dictionary[word] : null;
+      if (wordNetSenses && wordNetSenses.length > 0) {
+        this.displayDefinitionsPopup(rawWord, wordNetSenses, "WordNet");
+        return;
+      }
+    
+      // 3) Fallback: fetch from a dictionary API
+      try {
+        const fallbackData = await this.fetchFallbackDefinition(word);
+        if (fallbackData && fallbackData.length > 0) {
+          const fallbackSenses = this.transformFallbackData(fallbackData);
+          if (fallbackSenses && fallbackSenses.length > 0) {
+            this.displayDefinitionsPopup(rawWord, fallbackSenses, "DictionaryAPI");
+            return;
+          }
+        }
+    
+        // 4) If still no definition, display "No definition found."
+        this.createPopup(`
+          <h2>${rawWord}</h2>
+          <p><em>No definition found.</em></p>
+          <small>Source: DictionaryAPI</small>
+        `);
+      } catch (err) {
+        console.warn("Fallback definition fetch failed:", err);
+        this.createPopup(`
+          <h2>${rawWord}</h2>
+          <p><em>No definition found (API error).</em></p>
+          <small>Source: DictionaryAPI</small>
+        `);
+      }
     }
 
     /**
