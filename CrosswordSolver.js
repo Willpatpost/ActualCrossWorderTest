@@ -1,62 +1,74 @@
 // CrosswordSolver.js
 
 import { predefinedPuzzles } from './puzzles.js';
+import { WordListProvider } from './WordListProvider.js';
 
 export class CrosswordSolver {
-    constructor() {
-        // --------------------- Configuration & Flags ---------------------
-        this.DEBUG = false;
-        this.isSolving = false;
-        this.isNumberEntryMode = false;
-        this.isLetterEntryMode = false;
-        this.isDragMode = false;
-        this.isDragging = false;
+  constructor() {
+    // --------------------- Configuration & Flags ---------------------
+    this.DEBUG = false;
+    this.isSolving = false;
+    this.isNumberEntryMode = false;
+    this.isLetterEntryMode = false;
+    this.isDragMode = false;
+    this.isDragging = false;
 
-        // --------------------- Data Structures ---------------------
-        this.grid = [];
-        this.words = [];
-        this.wordLengthCache = {};
-        this.letterFrequencies = {};
-        this.slots = {};
-        this.constraints = {};
-        this.solution = {};
-        this.domains = {};
-        this.cellContents = {};
-        this.cells = {};
-        this.performanceData = {};
-        this.recursiveCalls = 0;
+    // --------------------- Data Structures ---------------------
+    this.grid = [];
+    this.words = [];
 
-        // --------------------- Predefined Puzzles ---------------------
-        this.predefinedPuzzles = predefinedPuzzles;
+    // NOTE: We keep wordLengthCache for now to minimize diffs elsewhere.
+    // It will be filled lazily per-length from WordListProvider.
+    this.wordLengthCache = {};
+    this.letterFrequencies = {};
 
-        // --------------------- Drag Mode Variables ---------------------
-        this.toggleToBlack = true;
-        this.startDragBound = null;
-        this.onDragBound = null;
-        this.stopDragBound = null;
+    this.slots = {};
+    this.constraints = {};
+    this.solution = {};
+    this.domains = {};
+    this.cellContents = {};
+    this.cells = {};
+    this.performanceData = {};
+    this.recursiveCalls = 0;
 
-        // --------------------- WordNet Dictionary ---------------------
-        this.dictionary = null; // set via setDictionary(dictionaryObj) after loading
-        this._wordNetLoadPromise = null;
-        
-        // --------------------- Method Binding ---------------------
-        this.loadWords = this.loadWords.bind(this);
-        this.generateGrid = this.generateGrid.bind(this);
-        this.renderGrid = this.renderGrid.bind(this);
-        this.loadPredefinedPuzzle = this.loadPredefinedPuzzle.bind(this);
-        this.cellClicked = this.cellClicked.bind(this);
-        this.startNumberEntryMode = this.startNumberEntryMode.bind(this);
-        this.startLetterEntryMode = this.startLetterEntryMode.bind(this);
-        this.startDragMode = this.startDragMode.bind(this);
-        this.solveCrossword = this.solveCrossword.bind(this);
-        this.handleSearchInput = this.handleSearchInput.bind(this);
-        this.displaySearchResults = this.displaySearchResults.bind(this);
-        this.showDefinitionPopup = this.showDefinitionPopup.bind(this);
-        this.autoNumberGrid = this.autoNumberGrid.bind(this);
+    // --------------------- Predefined Puzzles ---------------------
+    this.predefinedPuzzles = predefinedPuzzles;
 
-        // A simple cache for fallback definitions so we don't re-fetch the same word repeatedly
-        this.fallbackCache = {};
-    }
+    // --------------------- Drag Mode Variables ---------------------
+    this.toggleToBlack = true;
+    this.startDragBound = null;
+    this.onDragBound = null;
+    this.stopDragBound = null;
+
+    // --------------------- Word List Provider (Lazy by length) ---------------------
+    // Expects files like: Data/words_by_length/words-5.txt
+    this.wordProvider = new WordListProvider({
+      basePath: 'Data/words_by_length',
+      uppercase: true,
+    });
+
+    // --------------------- WordNet Dictionary (Lazy-loaded) ---------------------
+    this.dictionary = null;
+    this._wordNetLoadPromise = null;
+
+    // --------------------- Method Binding ---------------------
+    this.loadWords = this.loadWords.bind(this);
+    this.generateGrid = this.generateGrid.bind(this);
+    this.renderGrid = this.renderGrid.bind(this);
+    this.loadPredefinedPuzzle = this.loadPredefinedPuzzle.bind(this);
+    this.cellClicked = this.cellClicked.bind(this);
+    this.startNumberEntryMode = this.startNumberEntryMode.bind(this);
+    this.startLetterEntryMode = this.startLetterEntryMode.bind(this);
+    this.startDragMode = this.startDragMode.bind(this);
+    this.solveCrossword = this.solveCrossword.bind(this);
+    this.handleSearchInput = this.handleSearchInput.bind(this);
+    this.displaySearchResults = this.displaySearchResults.bind(this);
+    this.showDefinitionPopup = this.showDefinitionPopup.bind(this);
+    this.autoNumberGrid = this.autoNumberGrid.bind(this);
+
+    // A simple cache for fallback definitions so we don't re-fetch the same word repeatedly
+    this.fallbackCache = {};
+  }
 
     // ----------------------------------------------------------------
     //                  Dictionary & Definition Popup
@@ -297,12 +309,8 @@ export class CrosswordSolver {
     init() {
         try {
             this.createEventListeners();
-            // Load from Words.txt (legacy approach)
-            this.loadWords()
-                .then(() => this.generateGrid(10, 10))
-                .catch((error) => {
-                    this.handleError("Initialization failed during word loading.", error);
-                });
+            this.generateGrid(10, 10);
+            this.updateStatus("Ready. Word lists will load on demand when solving.", true);
         } catch (error) {
             this.handleError("Initialization failed.", error);
         }
@@ -354,59 +362,28 @@ export class CrosswordSolver {
     // ----------------------------------------------------------------
 
     async loadWords() {
-        try {
-            const response = await fetch('Data/Words.txt');
-            if (!response.ok) {
-                throw new Error(`Network response was not ok: ${response.statusText}`);
-            }
-            const text = await response.text();
-            const rawWords = text
-                .split(/\r?\n/)
-                .map(w => w.trim().toUpperCase())
-                .filter(Boolean);
-
-            if (!rawWords.every(word => /^[A-Z]+$/.test(word))) {
-                throw new Error("File contains invalid words. Ensure all entries are purely alphabetic.");
-            }
-
-            this.words = rawWords;
-            this.cacheWordsByLength();
-            this.calculateLetterFrequencies();
-            this.debugLog(`Words loaded: ${this.words.length}`);
-            this.updateStatus(`Words loaded successfully: ${this.words.length}`);
-
-        } catch (error) {
-            this.words = ["LASER", "SAILS", "SHEET", "STEER", "HEEL", "HIKE", "KEEL", "KNOT"];
-            alert("Warning: Words.txt not found or invalid. Using fallback word list.");
-            this.debugLog("Words.txt not found or invalid. Using fallback word list.");
-            this.updateStatus("Warning: Words.txt not found or invalid. Using fallback word list.", true);
-            this.cacheWordsByLength();
-            this.calculateLetterFrequencies();
-        }
+        // Legacy stub: we no longer load a monolithic Words.txt.
+        // Word lists are lazy-loaded by length via WordListProvider inside generateSlots().
+        this.words = [];
+        this.wordLengthCache = {};
+        this.letterFrequencies = {};
     }
 
-    cacheWordsByLength() {
-        this.wordLengthCache = {};
-        for (const word of this.words) {
-            const len = word.length;
-            if (!this.wordLengthCache[len]) {
-                this.wordLengthCache[len] = [];
+    calculateLetterFrequenciesFromLoadedCache() {
+        this.letterFrequencies = {};
+        for (const words of Object.values(this.wordLengthCache)) {
+            if (!Array.isArray(words)) continue;
+            for (const word of words) {
+                for (const ch of word) {
+                    this.letterFrequencies[ch] = (this.letterFrequencies[ch] || 0) + 1;
+                }
             }
-            this.wordLengthCache[len].push(word);
         }
-        this.debugLog("Word length cache created.");
     }
 
     calculateLetterFrequencies() {
-        this.letterFrequencies = {};
-        for (const word of this.words) {
-            for (const char of word) {
-                if (!this.letterFrequencies[char]) {
-                    this.letterFrequencies[char] = 0;
-                }
-                this.letterFrequencies[char]++;
-            }
-        }
+        // Kept name for compatibility, but now it derives from the lazy-loaded cache
+        this.calculateLetterFrequenciesFromLoadedCache();
     }
 
     // ----------------------------------------------------------------
@@ -895,7 +872,7 @@ export class CrosswordSolver {
         try {
             if (!this.validateGrid()) return;
 
-            this.generateSlots();
+            await this.generateSlots();
             if (Object.keys(this.slots).length === 0) {
                 alert("No numbered slots found to solve.");
                 this.updateStatus("Error: No numbered slots found to solve.");
@@ -959,67 +936,84 @@ export class CrosswordSolver {
         return true;
     }
 
-    generateSlots() {
-        this.slots = {};
-        this.domains = {};
-        this.cellContents = {};
+    async generateSlots() {
+    this.slots = {};
+    this.domains = {};
+    this.cellContents = {};
 
-        const rows = this.grid.length;
-        const cols = this.grid[0].length;
+    const rows = this.grid.length;
+    const cols = this.grid[0].length;
 
-        for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-                const val = this.grid[r][c];
-                const key = `${r},${c}`;
+    // Build cellContents map (known letters vs blanks)
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+        const val = this.grid[r][c];
+        const key = `${r},${c}`;
 
-                if (/[A-Z]/.test(val)) {
-                    this.cellContents[key] = val;
-                } else if (val !== "#" && val.trim() !== "") {
-                    this.cellContents[key] = null;
-                }
+        if (/[A-Z]/.test(val)) {
+            this.cellContents[key] = val;
+        } else if (val !== "#" && val.trim() !== "") {
+            this.cellContents[key] = null;
+        }
+        }
+    }
+
+    // Build slots
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+        if (/\d/.test(this.grid[r][c])) {
+            if (c === 0 || this.grid[r][c - 1] === "#") {
+            const positions = this.getSlotPositions(r, c, "across");
+            if (positions.length >= 2) {
+                const slotName = `${this.grid[r][c]}ACROSS`;
+                this.slots[slotName] = positions;
+            }
+            }
+            if (r === 0 || this.grid[r - 1][c] === "#") {
+            const positions = this.getSlotPositions(r, c, "down");
+            if (positions.length >= 2) {
+                const slotName = `${this.grid[r][c]}DOWN`;
+                this.slots[slotName] = positions;
+            }
             }
         }
-
-        for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-                if (/\d/.test(this.grid[r][c])) {
-                    if (c === 0 || this.grid[r][c - 1] === "#") {
-                        const positions = this.getSlotPositions(r, c, "across");
-                        if (positions.length >= 2) {
-                            const slotName = `${this.grid[r][c]}ACROSS`;
-                            this.slots[slotName] = positions;
-                        }
-                    }
-                    if (r === 0 || this.grid[r - 1][c] === "#") {
-                        const positions = this.getSlotPositions(r, c, "down");
-                        if (positions.length >= 2) {
-                            const slotName = `${this.grid[r][c]}DOWN`;
-                            this.slots[slotName] = positions;
-                        }
-                    }
-                }
-            }
         }
+    }
 
-        this.generateConstraints();
-        this.setupDomains();
+    // Lazy preload only needed lengths
+    const lengthsNeeded = [...new Set(Object.values(this.slots).map(pos => pos.length))];
+
+    // Fetch the per-length lists only for these lengths
+    await this.wordProvider.preloadLengths(lengthsNeeded);
+
+    // Fill existing cache so setupDomains() can stay the same
+    for (const L of lengthsNeeded) {
+        this.wordLengthCache[L] = await this.wordProvider.getWordsOfLength(L);
+    }
+
+    // Recompute letter frequencies based on the words we actually loaded
+    this.calculateLetterFrequenciesFromLoadedCache();
+    // -------------------------------------------------------------------------------
+
+    this.generateConstraints();
+    this.setupDomains();
     }
 
     getSlotPositions(r, c, direction) {
-        const positions = [];
-        while (
-            r < this.grid.length &&
-            c < this.grid[0].length &&
-            this.grid[r][c] !== "#"
-        ) {
-            positions.push([r, c]);
-            if (direction === "across") {
-                c++;
-            } else {
-                r++;
-            }
+    const positions = [];
+    while (
+        r < this.grid.length &&
+        c < this.grid[0].length &&
+        this.grid[r][c] !== "#"
+    ) {
+        positions.push([r, c]);
+        if (direction === "across") {
+        c++;
+        } else {
+        r++;
         }
-        return positions;
+    }
+    return positions;
     }
 
     generateConstraints() {
@@ -1466,11 +1460,7 @@ export class CrosswordSolver {
             return;
         }
 
-        const sourceWords = this.words.map(w => w.toUpperCase());
-        const allDictionaryWords = this.dictionary ? Object.keys(this.dictionary).map(k => k.toUpperCase()) : [];
-        const combinedSet = new Set([...sourceWords, ...allDictionaryWords]);
-        const combinedWords = Array.from(combinedSet);
-
+        const combinedWords = this.getSearchableWordsUppercase();
         const matches = combinedWords.filter(word => word.startsWith(query)).sort();
 
         matchesCount.textContent = matches.length > 0
@@ -1486,6 +1476,15 @@ export class CrosswordSolver {
 
         this.displaySearchResults(topMatches);
         dropdown.style.display = 'block';
+    }
+
+    getSearchableWordsUppercase() {
+        const fromLoadedLengths = [];
+        for (const arr of Object.values(this.wordLengthCache)) {
+            if (Array.isArray(arr)) fromLoadedLengths.push(...arr);
+        }
+        const wordnetKeys = this.dictionary ? Object.keys(this.dictionary).map(k => k.toUpperCase()) : [];
+        return Array.from(new Set([...fromLoadedLengths, ...wordnetKeys]));
     }
 
     displaySearchResults(matches) {
